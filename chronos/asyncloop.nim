@@ -176,6 +176,8 @@ elif unixPlatform:
   from posix import EINTR, EAGAIN, EINPROGRESS, EWOULDBLOCK, MSG_PEEK,
                     MSG_NOSIGNAL, SIGPIPE
 
+const MaxDeletedTimers = 1024
+
 type
   CallbackFunc* = proc (arg: pointer = nil) {.gcsafe.}
   CallSoonProc* = proc (c: CallbackFunc, u: pointer = nil) {.gcsafe.}
@@ -201,9 +203,10 @@ type
     isLeaked*: proc(): bool {.gcsafe.}
 
   PDispatcherBase = ref object of RootRef
-    timers*: HeapQueue[TimerCallback]
-    callbacks*: Deque[AsyncCallback]
+    timers: HeapQueue[TimerCallback]
+    callbacks: Deque[AsyncCallback]
     trackers*: Table[string, TrackerBase]
+    deletedTimers: int
 
 proc `<`(a, b: TimerCallback): bool =
   result = a.finishAt < b.finishAt
@@ -227,6 +230,17 @@ func getAsyncTimestamp*(a: Duration): auto {.inline.} =
     res = min(cast[int64](high(int32) - 1), res)
     result = cast[int32](res)
     result += min(1, cast[int32](mid))
+
+template removeDeletedTimers(loop: PDispatcherBase) =
+  if loop.deletedTimers >= MaxDeletedTimers:
+    var newHeap = initHeapQueue[TimerCallback]()
+    while loop.timers.len > 0:
+      var timer = loop.timers.pop()
+      if not timer.deleted:
+        newHeap.push(timer)
+
+    if newHeap.len > 0:
+      loop.timers = newHeap
 
 template processTimersGetTimeout(loop, timeout: untyped) =
   var lastFinish = curTime
@@ -451,6 +465,9 @@ when defined(windows) or defined(nimdoc):
     # All callbacks which will be added in process will be processed on next
     # poll() call.
     loop.processCallbacks()
+
+    # cleanup timers
+    loop.removeDeletedTimers()
 
   proc closeSocket*(fd: AsyncFD, aftercb: CallbackFunc = nil) =
     ## Closes a socket and ensures that it is unregistered.
@@ -729,6 +746,9 @@ elif unixPlatform:
     # poll() call.
     loop.processCallbacks()
 
+    # cleanup timers
+    loop.removeDeletedTimers()
+
 else:
   proc initAPI() = discard
   proc globalInit() = discard
@@ -743,6 +763,7 @@ proc setTimer(at: Moment, cb: CallbackFunc, udata: pointer = nil): TimerCallback
 
 proc clearTimer(timer: TimerCallback) {.inline.} =
   timer.deleted = true
+  getGlobalDispatcher().deletedTimers.inc()
 
 proc addTimer*(at: Moment, cb: CallbackFunc, udata: pointer = nil)
   {.deprecated: "Use setTimer/clearTimer instead".} =
