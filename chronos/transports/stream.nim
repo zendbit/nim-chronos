@@ -1895,15 +1895,15 @@ proc readMessage*(transp: StreamTransport,
   ## return number of bytes it is going to consume.
   ## ``predicate`` callback will receive (zero-length) openarray, if transport
   ## is at EOF.
-  readLoop("stream.transport.readMsg"):
-    if transp.atEof():
-      predicate([])
-    elif transp.offset > 0:
-      predicate(transp.buffer.toOpenArray(0, transp.offset - 1))
+  readLoop("stream.transport.readMessage"):
+    if transp.offset == 0:
+      if transp.atEof():
+        predicate([])
+      else:
+        # Case, when transport's buffer is not yet filled with data.
+        (0, false)
     else:
-      # `transp.offset == 0`, when first call of readMessage() is performed on
-      # newly created stream.
-      (0, false)
+      predicate(transp.buffer.toOpenArray(0, transp.offset - 1))
 
 proc join*(transp: StreamTransport): Future[void] =
   ## Wait until ``transp`` will not be closed.
